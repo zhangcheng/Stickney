@@ -1,0 +1,55 @@
+import math
+import socket
+from collections import deque
+
+from anyio import CancelScope
+from anyio.abc import AsyncResource, SocketStream
+from wsproto import Event
+
+from stickney.client import WebsocketClient
+from stickney.exc import WebsocketClosedError
+
+
+class FakeSocket(SocketStream):
+
+    async def receive(self, max_bytes: int = 65536) -> bytes:
+        pass
+
+    async def send(self, item: bytes) -> None:
+        pass
+
+    @property
+    def _raw_socket(self) -> socket.socket:
+        pass
+
+    async def send_eof(self) -> None:
+        pass
+
+    async def aclose(self) -> None:
+        pass
+
+
+class SimulatedWebsocket(WebsocketClient):
+    """
+    A websocket that allows for simulating incoming traffic.
+    """
+
+    def __init__(self):
+        super().__init__(FakeSocket(), cancel_scope=CancelScope(), buffer_size=math.inf)
+
+        #: A deque of outbound messages that have been "sent" by this websocket.
+        self.outbound_messages: deque[Event] = deque()
+
+    async def _send_message(self, event: Event):
+        if self._is_definitely_closed:
+            raise WebsocketClosedError(self._close_code, self._close_reason)
+
+        self.outbound_messages.append(event)
+
+    async def push_message(self, event: Event):
+        """
+        Pushes a single message down this websocket, updating the internal state machine.
+        """
+
+        await self._process_single_inbound_event(event)
+
