@@ -278,7 +278,7 @@ class WebsocketClient(object):
 
         self._is_closing = True
 
-        if self._is_definitely_closed:
+        if self._is_definitely_closed or self._client_initialised_close:
             # on trio, at least, this just calls checkpoint().
             return await anyio.sleep(0)
 
