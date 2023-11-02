@@ -1,4 +1,15 @@
+from __future__ import annotations
+
 import attr
+
+__all__ = (
+    "WsMessage",
+    "ConnectionOpenMessage",
+    "RejectMessage",
+    "CloseMessage",
+    "BinaryMessage",
+    "TextualMessage",
+)
 
 
 class WsMessage:
@@ -62,3 +73,21 @@ class BinaryMessage(WsMessage):
 
     #: The body of this message.
     body: bytes = attr.ib()
+
+
+@attr.s(frozen=True, slots=True)
+class PingMessage(WsMessage):
+    """
+    A ping heartbeat.
+    """
+
+    data: bytes = attr.ib()
+
+
+@attr.s(frozen=True, slots=True)
+class PongMessage(WsMessage):
+    """
+    A pong heartbeat.
+    """
+
+    data: bytes = attr.ib()

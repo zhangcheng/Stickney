@@ -1,9 +1,9 @@
 import pytest
-from wsproto.events import CloseConnection, TextMessage
+from wsproto.events import CloseConnection, TextMessage, Ping, Pong
 
 from stickney.client import open_ws_connection
 from stickney.exc import WebsocketClosedError, ConnectionRejectedError
-from stickney.frame import TextualMessage, BinaryMessage
+from stickney.frame import TextualMessage, BinaryMessage, PongMessage
 from stickney.sim import SimulatedWebsocket
 
 pytestmark = pytest.mark.anyio
@@ -68,6 +68,10 @@ async def test_server_side_close():
 
 
 async def test_message_buffering():
+    """
+    Tests that multi-part messages are buffered correctly.
+    """
+
     ws = SimulatedWebsocket()
     await ws.push_message(TextMessage(data="us", message_finished=False))
     await ws.push_message(TextMessage(data="agi", message_finished=True))
@@ -75,3 +79,29 @@ async def test_message_buffering():
     next = await ws.receive_single_message()
     assert isinstance(next, TextualMessage)
     assert next.body == "usagi"
+
+
+async def test_server_responds_to_ping():
+    """
+    Ensures that Ping/Pong handling is done correctly.
+    """
+
+    async with open_ws_connection("ws://127.0.0.1:1337") as conn:
+        await conn.send_ping(b"hi nicky!")
+        next_message = await conn.receive_single_message()
+
+        assert isinstance(next_message, PongMessage)
+        assert next_message.data == b"hi nicky!"
+
+
+async def test_client_responds_to_pings():
+    """
+    Ensures the client responds to Ping frames properly.
+    """
+
+    ws = SimulatedWebsocket()
+    await ws.push_message(Ping(b"hi colin!"))
+
+    pong_frame = ws.outbound_messages[0]
+    assert isinstance(pong_frame, Pong)
+    assert pong_frame.payload == b"hi colin!"

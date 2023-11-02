@@ -15,11 +15,11 @@ from anyio.streams.tls import TLSStream
 from furl import furl
 from wsproto import WSConnection, ConnectionType
 from wsproto.events import Request, Event, CloseConnection, TextMessage, BytesMessage, \
-    RejectConnection, RejectData, AcceptConnection
+    RejectConnection, RejectData, AcceptConnection, Ping, Pong
 
 from stickney.exc import WebsocketStateMachineError, ConnectionRejectedError, WebsocketClosedError
 from stickney.frame import WsMessage, CloseMessage, RejectMessage, TextualMessage, BinaryMessage, \
-    ConnectionOpenMessage
+    ConnectionOpenMessage, PingMessage, PongMessage
 
 
 class BufferType(Enum):
@@ -215,6 +215,16 @@ class WebsocketClient(object):
                 self._last_buffered_message = b""
                 await self._write_incoming.send(BinaryMessage(body))
 
+        elif isinstance(event, Ping):
+            if not self._is_definitely_closed:
+                await self._send_message(event.response())
+
+            await self._write_incoming.send(PingMessage(event.payload))
+
+        elif isinstance(event, Pong):
+            # kill yourself?
+            await self._write_incoming.send(PongMessage(event.payload))
+
     async def _pump_messages(self):
         while not self._is_definitely_closed:
             try:
@@ -287,6 +297,16 @@ class WebsocketClient(object):
         finally:
             self._cancel_scope.cancel()
             await self._sock.aclose()
+
+    async def send_ping(self, data: bytes = b"Have you heard of the high elves?"):
+        """
+        Sends a Ping frame to the remote server.
+
+        :param data: Arbitrary application data. This will be returned from the server in a Pong
+                     message.
+        """
+
+        await self._send_message(Ping(data))
 
     async def send_message(self, data: str | bytes, *, message_finished: bool = True):
         """
