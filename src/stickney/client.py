@@ -273,7 +273,12 @@ class WebsocketClient(object):
 
             return msg
 
-    async def close(self, *, code: int = 1000, reason: str = "Normal close"):
+    async def close(
+        self, *,
+        code: int = 1000,
+        reason: str = "Normal close",
+        disgraceful: bool = False,
+    ):
         """
         Closes the websocket connection. If the websocket is already closed (or is closing),
         this method does nothing.
@@ -281,6 +286,8 @@ class WebsocketClient(object):
         :param code: The closing code to use. This should be in the range 1000 .. 1011 for most
                      applications.
         :param reason: The close reason to use. Arbitrary string.
+        :param disgraceful: If True, then this will forcibly close the underlying socket instead of
+                            waiting for a closure.
         """
 
         self._is_closing = True
@@ -298,8 +305,9 @@ class WebsocketClient(object):
         try:
             await self._sock.send(self._proto.send(event))
             # drain all other incoming events
-            while not self._is_definitely_closed:
-                await self.receive_single_message()
+            if not disgraceful:
+                while not self._is_definitely_closed:
+                    await self.receive_single_message()
 
         finally:
             self._cancel_scope.cancel()
