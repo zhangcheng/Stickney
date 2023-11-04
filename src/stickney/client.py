@@ -247,12 +247,18 @@ class WebsocketClient(object):
     def definitely_closed(self) -> bool:
         return self._is_definitely_closed
 
-    async def receive_single_message(self) -> WsMessage:
+    async def receive_single_message(self, *, raise_on_close: bool = True) -> WsMessage:
         """
         Receives a single message from the websocket connection.
+
+        :param raise_on_close: If True, then an error will be raised on a server-sent close message.
+                               Defaults to True.
         """
 
         if self._is_definitely_closed:
+            if not raise_on_close:
+                return CloseMessage(self._close_code, self._close_reason)
+
             raise WebsocketClosedError(self._close_code, self._close_reason)
 
         with self._recv_lock:
@@ -262,7 +268,8 @@ class WebsocketClient(object):
                 raise ConnectionRejectedError(msg.status_code, msg.body)
 
             elif isinstance(msg, CloseMessage) and not self._client_initialised_close:
-                raise WebsocketClosedError(msg.close_code, msg.reason)
+                if raise_on_close:
+                    raise WebsocketClosedError(msg.close_code, msg.reason)
 
             return msg
 

@@ -3,7 +3,7 @@ from wsproto.events import CloseConnection, TextMessage, Ping, Pong
 
 from stickney.client import open_ws_connection
 from stickney.exc import WebsocketClosedError, ConnectionRejectedError
-from stickney.frame import TextualMessage, BinaryMessage, PongMessage
+from stickney.frame import TextualMessage, BinaryMessage, PongMessage, CloseMessage
 from stickney.sim import SimulatedWebsocket
 
 pytestmark = pytest.mark.anyio
@@ -65,6 +65,22 @@ async def test_server_side_close():
     close_resp = ws.outbound_messages[0]
     assert isinstance(close_resp, CloseConnection)
     assert ws.definitely_closed
+
+
+async def test_dont_raise_on_close():
+    """
+    Tests that the client won't raise on close if told not to.
+    """
+
+    ws = SimulatedWebsocket()
+    await ws.push_message(CloseConnection(code=1000))
+
+    next_msg = await ws.receive_single_message(raise_on_close=False)
+    assert isinstance(next_msg, CloseMessage)
+    assert ws.definitely_closed
+
+    with pytest.raises(WebsocketClosedError):
+        await ws.receive_single_message()
 
 
 async def test_message_buffering():

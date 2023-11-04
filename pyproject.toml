@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "stickney"
-version = "0.7.0"
+version = "0.7.1"
 description = "Asynchronous websockets library"
 authors = ["Lura Skye <l@veriny.tf>"]
 readme = "README.rst"
