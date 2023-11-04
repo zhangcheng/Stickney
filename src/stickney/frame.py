@@ -9,6 +9,8 @@ __all__ = (
     "CloseMessage",
     "BinaryMessage",
     "TextualMessage",
+    "PingMessage",
+    "PongMessage",
 )
 
 

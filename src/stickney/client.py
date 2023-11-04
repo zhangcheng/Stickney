@@ -63,13 +63,14 @@ class WebsocketClient(object):
         self._close_event = AioEvent()
         self._open_event = AioEvent()
 
-        # Closure is a bit messy; websockets can be sorta half-closed.
-        # ``_is_closing``: somebody, somewhere, has requested the websocket needs to be closed.
-        # messages can be still be sent and received.
-        self._is_closing = False
-        # ``is_definitely_closed``: The WS is *definitely* closed; no messages can be sent or
-        # received.
+        # Closing is *still* a bit messy.
+        # ``_is_half_closed`` -> a close frame has been processed, but we're still waiting for
+        # *somebody* to deal with it. sending new messages will fail.
+        self._is_half_closed = False
+        # we are definitely closed, and receiving new messages will fail.
+        # this can never be true and half_closed be false at the same time.
         self._is_definitely_closed = False
+
         # ``client_initialised_close``: Don't bother responding to the server's close frame.
         self._client_initialised_close = False
 
@@ -93,7 +94,7 @@ class WebsocketClient(object):
         Sends a single message over the websocket connection.
         """
 
-        if self._is_definitely_closed:
+        if self._is_half_closed:
             raise WebsocketClosedError(self._close_code, self._close_reason)
 
         async with self._lock:
@@ -136,13 +137,11 @@ class WebsocketClient(object):
                         # ok, thanks
                         pass
             finally:
-                self._is_definitely_closed = True
-                self._close_event.set()
+                self._is_half_closed = True
                 await self._write_incoming.send(
                     CloseMessage(close_code=event.code, reason=event.reason)
                 )
                 self._write_incoming.close()
-                await self._sock.aclose()
 
         elif isinstance(event, RejectConnection):
             assert self._buffer_type is None, "shouldnt get a reject during buffering, wtf wsproto?"
@@ -226,12 +225,12 @@ class WebsocketClient(object):
             await self._write_incoming.send(PongMessage(event.payload))
 
     async def _pump_messages(self):
-        while not self._is_definitely_closed:
+        while not self._is_half_closed:
             try:
                 raw_data = await self._sock.receive(WebsocketClient.BUFFER_SIZE)
             except (ClosedResourceError, EndOfStream):
                 # EOF means that we are *absolutely* closed and there's nothing to do anymore.
-                self._is_definitely_closed = True
+                self._is_half_closed = True
                 await self._process_single_inbound_event(
                     CloseConnection(1006, "Socket unexpectedly closed")
                 )
@@ -242,6 +241,15 @@ class WebsocketClient(object):
 
             for event in self._proto.events():
                 await self._process_single_inbound_event(event)
+
+    async def _finish(self):
+        while True:
+            try:
+                await self._read_incoming.receive()
+            except (EndOfStream, ClosedResourceError):
+                break
+
+        await self._sock.aclose()
 
     @property
     def definitely_closed(self) -> bool:
@@ -267,8 +275,10 @@ class WebsocketClient(object):
             if isinstance(msg, RejectMessage):
                 raise ConnectionRejectedError(msg.status_code, msg.body)
 
-            elif isinstance(msg, CloseMessage) and not self._client_initialised_close:
-                if raise_on_close:
+            elif isinstance(msg, CloseMessage):
+                self._is_definitely_closed = True
+
+                if raise_on_close and not self._client_initialised_close:
                     raise WebsocketClosedError(msg.close_code, msg.reason)
 
             return msg
@@ -277,7 +287,6 @@ class WebsocketClient(object):
         self, *,
         code: int = 1000,
         reason: str = "Normal close",
-        disgraceful: bool = False,
     ):
         """
         Closes the websocket connection. If the websocket is already closed (or is closing),
@@ -286,13 +295,9 @@ class WebsocketClient(object):
         :param code: The closing code to use. This should be in the range 1000 .. 1011 for most
                      applications.
         :param reason: The close reason to use. Arbitrary string.
-        :param disgraceful: If True, then this will forcibly close the underlying socket instead of
-                            waiting for a closure.
         """
 
-        self._is_closing = True
-
-        if self._is_definitely_closed or self._client_initialised_close:
+        if self._is_half_closed or self._client_initialised_close:
             # on trio, at least, this just calls checkpoint().
             return await anyio.sleep(0)
 
@@ -302,16 +307,7 @@ class WebsocketClient(object):
         self._client_initialised_close = True
         event = CloseConnection(code=code, reason=reason)
 
-        try:
-            await self._sock.send(self._proto.send(event))
-            # drain all other incoming events
-            if not disgraceful:
-                while not self._is_definitely_closed:
-                    await self.receive_single_message()
-
-        finally:
-            self._cancel_scope.cancel()
-            await self._sock.aclose()
+        await self._sock.send(self._proto.send(event))
 
     async def send_ping(self, data: bytes = b"Have you heard of the high elves?"):
         """
@@ -390,6 +386,7 @@ def open_ws_connection(
                 yield conn
             finally:
                 await conn.close(code=1000)
+                await conn._finish()
                 # I fucking hate asyncio!
                 nursery.cancel_scope.cancel()
 
