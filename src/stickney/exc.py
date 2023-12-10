@@ -8,6 +8,7 @@ __all__ = (
     "ConnectionRejectedError",
 )
 
+
 class WebsocketStateMachineError(RuntimeError):
     """
     Raised when the websocket state machine is, in some form, corrupted.
@@ -32,7 +33,7 @@ class ConnectionRejectedError(anyio.BrokenResourceError):
     """
 
     def __init__(self, status_code: int, body: bytes):
-        super().__init__(f"Server rejected WebSocket connection: {status_code} ({body})")
+        super().__init__(f"Server rejected WebSocket connection: {status_code} ({body!r})")
 
         self.status_code = status_code
         self.body = body

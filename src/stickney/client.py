@@ -1,25 +1,53 @@
 from __future__ import annotations
 
+import contextlib
 import ssl
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from enum import Enum
-from typing import AsyncContextManager
+from typing import cast
+from urllib.parse import ParseResult, urlparse
 
 import anyio
-from anyio import Event as AioEvent, CancelScope, ClosedResourceError, EndOfStream
-from anyio import create_memory_object_stream
+from anyio import (
+    CancelScope,
+    ClosedResourceError,
+    EndOfStream,
+    Event as AioEvent,
+    create_memory_object_stream,
+)
 from anyio._core._synchronization import ResourceGuard
 from anyio.abc import SocketStream
-from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from anyio.streams.tls import TLSStream
-from furl import furl
-from wsproto import WSConnection, ConnectionType
-from wsproto.events import Request, Event, CloseConnection, TextMessage, BytesMessage, \
-    RejectConnection, RejectData, AcceptConnection, Ping, Pong
+from wsproto import ConnectionType, WSConnection
+from wsproto.events import (
+    AcceptConnection,
+    BytesMessage,
+    CloseConnection,
+    Event,
+    Ping,
+    Pong,
+    RejectConnection,
+    RejectData,
+    Request,
+    TextMessage,
+)
 
-from stickney.exc import WebsocketStateMachineError, ConnectionRejectedError, WebsocketClosedError
-from stickney.frame import WsMessage, CloseMessage, RejectMessage, TextualMessage, BinaryMessage, \
-    ConnectionOpenMessage, PingMessage, PongMessage
+from stickney.exc import (
+    ConnectionRejectedError,
+    WebsocketClosedError,
+    WebsocketStateMachineError,
+)
+from stickney.frame import (
+    BinaryMessage,
+    CloseMessage,
+    ConnectionOpenMessage,
+    PingMessage,
+    PongMessage,
+    RejectMessage,
+    TextualMessage,
+    WsMessage,
+)
 
 
 class BufferType(Enum):
@@ -37,12 +65,12 @@ class BufferType(Enum):
     BYTES = 2
 
 
-class WebsocketClient(object):
+class WebsocketClient:
     """
     A single client websocket connection.
     """
 
-    BUFFER_SIZE = 2 ** 16
+    BUFFER_SIZE = 2**16
 
     def __init__(
         self,
@@ -74,9 +102,9 @@ class WebsocketClient(object):
         # ``client_initialised_close``: Don't bother responding to the server's close frame.
         self._client_initialised_close = False
 
-        write, read = create_memory_object_stream(buffer_size)
-        self._read_incoming: MemoryObjectReceiveStream[WsMessage] = read
-        self._write_incoming: MemoryObjectSendStream[WsMessage] = write
+        self._write_incoming, self._read_incoming = create_memory_object_stream[WsMessage](
+            buffer_size
+        )
 
         # used for buffering various message types, last buf message is shared across all of them
         # but rejected error code is only used for rejected messages.
@@ -89,7 +117,7 @@ class WebsocketClient(object):
 
         self._pumping = False
 
-    async def _send_message(self, event: Event):
+    async def _send_message(self, event: Event) -> None:
         """
         Sends a single message over the websocket connection.
         """
@@ -101,24 +129,26 @@ class WebsocketClient(object):
             data = self._proto.send(event)
             await self._sock.send(data)
 
-    async def _do_handshake(self, url: furl):
+    async def _do_handshake(self, url: ParseResult) -> None:
         """
         Does the opening websocket handshake.
         """
 
+        assert url.hostname
+
         path = str(url.path) if url.path else "/"
 
         if url.query:
-            req = Request(host=url.host, target=path + "?" + str(url.query))
+            req = Request(host=url.hostname, target=path + "?" + str(url.query))
         else:
-            req = Request(host=url.host, target=path)
+            req = Request(host=url.hostname, target=path)
         await self._sock.send(self._proto.send(req))
 
         incoming = await self.receive_single_message()
         if not isinstance(incoming, ConnectionOpenMessage):
             raise WebsocketStateMachineError(f"Expected a ConnectionOpenMessage, got a {incoming}")
 
-    async def _process_single_inbound_event(self, event: Event):
+    async def _process_single_inbound_event(self, event: Event) -> None:
         if isinstance(event, AcceptConnection):
             await self._write_incoming.send(ConnectionOpenMessage())
 
@@ -126,20 +156,22 @@ class WebsocketClient(object):
             self._close_event.set()
 
             self._is_closing = True
-            self._close_reason = event.reason
+            if reason := event.reason:
+                self._close_reason = reason
+            else:
+                self._close_reason = "Closed"
             self._close_code = event.code
 
             try:
                 if not (self._is_definitely_closed or self._client_initialised_close):
-                    try:
+                    with contextlib.suppress(
+                        ClosedResourceError, EndOfStream, WebsocketClosedError
+                    ):
                         await self._send_message(event.response())
-                    except (ClosedResourceError, EndOfStream, WebsocketClosedError):
-                        # ok, thanks
-                        pass
             finally:
                 self._is_half_closed = True
                 await self._write_incoming.send(
-                    CloseMessage(close_code=event.code, reason=event.reason)
+                    CloseMessage(close_code=event.code, reason=self._close_reason)
                 )
                 self._write_incoming.close()
 
@@ -164,12 +196,13 @@ class WebsocketClient(object):
         elif isinstance(event, RejectData):
             assert self._buffer_type == BufferType.REJECT, "reject data before reject conn? wtf??"
 
-            self._last_buffered_message += event.data
+            self._last_buffered_message += event.data  # type: ignore
             if event.body_finished:
                 try:
                     await self._write_incoming.send(
                         RejectMessage(
-                            status_code=self._rejected_error_code, body=self._last_buffered_message
+                            status_code=self._rejected_error_code,
+                            body=self._last_buffered_message,  # type: ignore
                         )
                     )
                 finally:
@@ -180,7 +213,7 @@ class WebsocketClient(object):
 
         elif isinstance(event, TextMessage):
             if self._buffer_type == BufferType.TEXTUAL:
-                self._last_buffered_message += event.data
+                self._last_buffered_message += event.data  # type: ignore
             elif self._buffer_type is None:
                 self._buffer_type = BufferType.TEXTUAL
                 self._last_buffered_message = event.data
@@ -192,13 +225,13 @@ class WebsocketClient(object):
 
             if event.message_finished:
                 self._buffer_type = None
-                body = self._last_buffered_message
+                text_body: str = cast(str, self._last_buffered_message)
                 self._last_buffered_message = ""
-                await self._write_incoming.send(TextualMessage(body))
+                await self._write_incoming.send(TextualMessage(text_body)) 
 
         elif isinstance(event, BytesMessage):
             if self._buffer_type == BufferType.BYTES:
-                self._last_buffered_message += event.data
+                self._last_buffered_message += event.data  # type: ignore
             elif self._buffer_type is None:
                 self._buffer_type = BufferType.BYTES
                 self._last_buffered_message = event.data
@@ -210,9 +243,9 @@ class WebsocketClient(object):
 
             if event.message_finished:
                 self._buffer_type = None
-                body = self._last_buffered_message
+                bytes_body: bytes = cast(bytes, self._last_buffered_message)
                 self._last_buffered_message = b""
-                await self._write_incoming.send(BinaryMessage(body))
+                await self._write_incoming.send(BinaryMessage(bytes_body))
 
         elif isinstance(event, Ping):
             if not self._is_definitely_closed:
@@ -221,7 +254,6 @@ class WebsocketClient(object):
             await self._write_incoming.send(PingMessage(event.payload))
 
         elif isinstance(event, Pong):
-            # kill yourself?
             await self._write_incoming.send(PongMessage(event.payload))
 
     async def _pump_messages(self):
@@ -242,7 +274,7 @@ class WebsocketClient(object):
             for event in self._proto.events():
                 await self._process_single_inbound_event(event)
 
-    async def _finish(self):
+    async def _finish(self) -> None:
         while True:
             try:
                 await self._read_incoming.receive()
@@ -275,7 +307,7 @@ class WebsocketClient(object):
             if isinstance(msg, RejectMessage):
                 raise ConnectionRejectedError(msg.status_code, msg.body)
 
-            elif isinstance(msg, CloseMessage):
+            if isinstance(msg, CloseMessage):
                 self._is_definitely_closed = True
 
                 if raise_on_close and not self._client_initialised_close:
@@ -284,10 +316,11 @@ class WebsocketClient(object):
             return msg
 
     async def close(
-        self, *,
+        self,
+        *,
         code: int = 1000,
         reason: str = "Normal close",
-    ):
+    ) -> None:
         """
         Closes the websocket connection. If the websocket is already closed (or is closing),
         this method does nothing.
@@ -308,8 +341,9 @@ class WebsocketClient(object):
         event = CloseConnection(code=code, reason=reason)
 
         await self._sock.send(self._proto.send(event))
+        return None
 
-    async def send_ping(self, data: bytes = b"Have you heard of the high elves?"):
+    async def send_ping(self, data: bytes = b"Have you heard of the high elves?") -> None:
         """
         Sends a Ping frame to the remote server.
 
@@ -319,7 +353,7 @@ class WebsocketClient(object):
 
         await self._send_message(Ping(data))
 
-    async def send_message(self, data: str | bytes, *, message_finished: bool = True):
+    async def send_message(self, data: str | bytes, *, message_finished: bool = True) -> None:
         """
         Sends a message to the remote websocket server.
 
@@ -328,6 +362,7 @@ class WebsocketClient(object):
         :param message_finished: If this is a complete message or not.
         """
 
+        event: TextMessage | BytesMessage
         if isinstance(data, str):
             event = TextMessage(data, message_finished=message_finished)
         elif isinstance(data, bytes):
@@ -338,12 +373,10 @@ class WebsocketClient(object):
         await self._send_message(event)
 
 
-def open_ws_connection(
-    url: str,
-    *,
-    gracefully_close: bool = True,
-    tls_context: ssl.SSLContext = None
-) -> AsyncContextManager[WebsocketClient]:
+@asynccontextmanager
+async def open_ws_connection(
+    url: str, *, gracefully_close: bool = True, tls_context: ssl.SSLContext | None = None
+) -> AsyncGenerator[WebsocketClient, None]:
     """
     Opens a new websocket connection to the provided URL, and returns a new asynchronous context
     manager holding the websocket.
@@ -356,38 +389,44 @@ def open_ws_connection(
     :param tls_context: The TLS context to use for opening WSS connections. Optional.
     """
 
-    url = furl(url)
+    parsed_url = urlparse(url)
+    if parsed_url.hostname is None:
+        raise ValueError("why does the url have no hostname?")
 
-    port: int = url.port
+    port: int | None = parsed_url.port
+
     if port is None:
-        # furl handles this, but otherwise just default to port 80
-        port = 80
+        match parsed_url.scheme:
+            case "ws" | "http":
+                port = 80
 
-    if (url.scheme == "wss" or url.scheme == "https") and not tls_context:
+            case "wss" | "https":
+                port = 443
+
+            case _:
+                port = 80
+
+    if (parsed_url.scheme == "wss" or parsed_url.scheme == "https") and not tls_context:
         tls_context = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH)
 
-    @asynccontextmanager
-    async def _do():
-        async with (await anyio.connect_tcp(
-            url.host, port,
-            tls=tls_context is not None,
-            ssl_context=tls_context,
-            tls_standard_compatible=False,
-        )) as socket, anyio.create_task_group() as nursery:
-            conn = WebsocketClient(
-                socket,
-                graceful_closes=gracefully_close,
-                cancel_scope=nursery.cancel_scope
-            )
-            nursery.start_soon(conn._pump_messages)
-            await conn._do_handshake(url)
+    async with await anyio.connect_tcp(
+        parsed_url.hostname,
+        port,
+        ssl_context=tls_context,  # type: ignore
+        tls_standard_compatible=False,
+    ) as socket, anyio.create_task_group() as nursery:
+        conn = WebsocketClient(
+            socket,
+            graceful_closes=gracefully_close,
+            cancel_scope=nursery.cancel_scope,
+        )
+        nursery.start_soon(conn._pump_messages)
+        await conn._do_handshake(parsed_url)
 
-            try:
-                yield conn
-            finally:
-                await conn.close(code=1000)
-                await conn._finish()
-                # I fucking hate asyncio!
-                nursery.cancel_scope.cancel()
-
-    return _do()
+        try:
+            yield conn
+        finally:
+            await conn.close(code=1000)
+            await conn._finish()
+            # I fucking hate asyncio!
+            nursery.cancel_scope.cancel()

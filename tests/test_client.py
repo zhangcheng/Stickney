@@ -1,10 +1,9 @@
 import pytest
-from wsproto.events import CloseConnection, TextMessage, Ping, Pong
-
 from stickney.client import open_ws_connection
-from stickney.exc import WebsocketClosedError, ConnectionRejectedError
-from stickney.frame import TextualMessage, BinaryMessage, PongMessage, CloseMessage
+from stickney.exc import ConnectionRejectedError, WebsocketClosedError
+from stickney.frame import BinaryMessage, CloseMessage, PongMessage, TextualMessage
 from stickney.sim import SimulatedWebsocket
+from wsproto.events import CloseConnection, Ping, Pong, TextMessage
 
 pytestmark = pytest.mark.anyio
 
