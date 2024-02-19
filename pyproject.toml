@@ -12,7 +12,7 @@ packages = [{include = "stickney", from = "src"}]
 license = "LGPL-3.0-or-later"
 
 [tool.poetry.dependencies]
-python = ">=3.12"
+python = ">=3.11"
 wsproto = ">=1.2.0"
 anyio = "^4.1.0"
 attrs = ">=23.1.0"
@@ -27,7 +27,7 @@ mypy = ">=1.7.0"
 pyright = "^1.1.339"
 
 [tool.ruff]
-target-version = "py312"
+target-version = "py311"
 respect-gitignore = true
 # fix = true
 src = ["src/chiru"]
@@ -59,7 +59,7 @@ ignore = [
 combine-as-imports = true
 
 [tool.mypy]
-python_version = "3.12"
+python_version = "3.11"
 ignore_missing_imports = true
 
 local_partial_types = true
